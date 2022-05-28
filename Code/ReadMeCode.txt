@@ -1,4 +1,11 @@
-Read me for FEniCS codes:
+Read me for FEniCS codes containing information on usage and descriptions of
+each code. TH stands for Taylor Hood (non stabilized) formulations and were used
+for testing. 
+
+Any of the codes can be run in command line through
+  python3 CodeName.py
+If using option parameters
+  python3 CodeName.py --Parameter1 1 --Parameter2 2
 
 Plane Stress Formulations:
   2D-planestress-TH.py

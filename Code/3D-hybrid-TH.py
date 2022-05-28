@@ -1,32 +1,28 @@
-# -------------------------------------------
-# FEniCS code  Variational Fracture Mechanics
 ################################################################################
-#                                                                              #
-# A Taylor-Hood finite element method for gradient damage models of            #
-# fracture in incompressible hyperelastic materials                            #
-# author: Bin Li                                                               #
-# Email: bl736@cornell.edu                                                     #
-# date: 10/01/2018                                                             #
-#                                                                              #
+# FEniCS Code
 ################################################################################
-# e.g. python3 traction-neo-Hookean.py --meshsize 100						   #
+#
+# A Taylor-Hood finite element method for gradient damage models of fracture in
+# incompressible hyperelastic materials for 3D cases
+#
+# This example has the 3D Notch geometry
+#
+# Authors: Ida Ang and Bin Li
+# Email: ia267@cornell.edu and bin.l@gtiit.edu.cn (primary contact)
+# Date Last Edited: May 25th 2022
+#
 ################################################################################
 
-# ----------------------------------------------------------------------------
-from __future__ import division
 from dolfin import *
 from mshr import *
-from scipy import optimize
 from ufl import eq
-
-import argparse
+import src.LogLoading as LogLoad        # Import python script
 import math
 import os
 import shutil
 import sympy
-import sys
-import numpy as np
 import time
+import numpy as np
 import matplotlib.pyplot as plt
 
 # Parameters for DOLFIN and SOLVER
@@ -70,9 +66,6 @@ solver_alpha  = PETScTAOSolver()
 solver_alpha.parameters.update(tao_solver_parameters)
 # info(solver_alpha.parameters,True) # uncomment to see available parameters
 
-# Implement the box constraints for damage field
-# --------------------------------------------------------------------
-# Variational problem for the damage (non-linear to use variational inequality solvers of petsc)
 # Define the minimisation problem by using OptimisationProblem class
 class DamageProblem(OptimisationProblem):
     def __init__(self):
@@ -139,23 +132,21 @@ pin_point = pin_point()
 # ----------------------------------------------------------------------------
 parameters.parse()
 userpar = Parameters("user")
-userpar.add("mu", 1)          # Shear modulus
-userpar.add("kappa", 1000)       # Bulk Modulus
-userpar.add("Gc", 1)            # fracture toughness
-userpar.add("k_ell", 5.e-5)     # residual stiffness
-userpar.add("load_min", 0.0)
-userpar.add("load_max", 1.3)
-userpar.add("load_steps", 260)
-userpar.add("hsize", 0.01)
-userpar.add("ell_multi", 5)
-userpar.add("exp_load", 0)
-userpar.add("a_exp", 1.064)
-userpar.add("b_exp", 0.00076979)
-userpar.add("c_exp", -1.064)
-userpar.add("d_exp", -0.1654)
+userpar.add("mu", 1)            # Shear modulus
+userpar.add("kappa", 1000)      # Bulk Modulus
+userpar.add("Gc", 1)            # Fracture toughness
+userpar.add("k_ell", 5.e-5)     # Residual stiffness
+userpar.add("load_max", 1.3)    # Maximum loading (fracture can occur earlier)
+userpar.add("load_steps", 260)  # Steps in which loading from 0 to load_max occurs
+userpar.add("hsize", 0.02)      # Element size in the center of the domain
+userpar.add("ell_multi", 5)     # For definition of phase-field width
+# 1 = on, 0 = off for loading defined by a log function
+userpar.add("log_load", 1)
 # Parse command-line options
 userpar.parse()
 
+# Constants: some parsed from user parameters
+# ----------------------------------------------------------------------------
 # Geometry parameters
 W, H, T = 1.0, 1.5, 0.08
 hsize = userpar["hsize"]
@@ -163,25 +154,22 @@ hsize = userpar["hsize"]
 body_force = Constant((0., 0., 0.))
 
 # Material constants
-mu    = userpar["mu"]
-kappa = userpar["kappa"]
+mu    = userpar["mu"]           # Shear Modulus
+kappa = userpar["kappa"]        # Bulk Modulus
 Gc    = userpar["Gc"]           # Fracture toughness
 k_ell = userpar["k_ell"]        # Residual stiffness
 # Damage regularization parameter - internal length scale used for tuning Gc
 ell_multi = userpar["ell_multi"]
 ell = Constant(ell_multi*hsize)
 
+if MPI.rank(MPI.comm_world) == 0:
+    print("The kappa/mu: {0:4e}".format(kappa/mu))
+    print("The mu/Gc: {0:4e}".format(mu/Gc))
+
 # Number of steps
-load_min = userpar["load_min"]
+load_min = 0.0
 load_max = userpar["load_max"]
 load_steps = userpar["load_steps"]
-
-# Exponential function loading
-exp_load = userpar["exp_load"]
-a_exp = userpar["a_exp"]
-b_exp = userpar["b_exp"]
-c_exp = userpar["c_exp"]
-d_exp = userpar["d_exp"]
 
 # Numerical parameters of the alternate minimization
 maxiteration = 2500
@@ -199,18 +187,14 @@ if MPI.rank(MPI.comm_world) == 0:
 
 # Mesh generation
 # mesh = BoxMesh(Point(0.0, 0.0, 0.0), Point(L, H, W), Nx, Ny, Nz)
-mesh = Mesh("../Geo/3DEdgeCrack.xml")
+mesh = Mesh("../Gmsh/3DEdgeCrack.xml")
 geo_mesh  = XDMFFile(MPI.comm_world, savedir+meshname)
 geo_mesh.write(mesh)
-# obtain number of space dimensions
+# Obtain number of space dimensions
 mesh.init()
 ndim = mesh.geometry().dim()
 if MPI.rank(MPI.comm_world) == 0:
-    print ("the dimension of mesh: {0:2d}".format(ndim))
-
-if MPI.rank(MPI.comm_world) == 0:
-  print("The kappa/mu: {0:4e}".format(kappa/mu))
-  print("The mu/Gc: {0:4e}".format(mu/Gc))
+    print ("Mesh dimension: {0:2d}".format(ndim))
 
 # Define lines and points
 lines = MeshFunction("size_t", mesh, mesh.topology().dim() - 2)
@@ -228,6 +212,21 @@ points.set_all(0)
 pin_point.mark(points, 1)
 file_results = XDMFFile(savedir + "/" + "points.xdmf")
 file_results.write(points)
+
+# Loading defined by a logistic or even interval loading
+log_load = userpar["log_load"]
+if log_load == 1:   # If logistic loading is specified
+    # Any of these parameters can be changed to modify the log function
+    inc = 0.001
+    int_point = 2
+    growth_rate = 0.3
+    load_multipliers = LogLoad.LogLoading(savedir, load_max, load_steps, inc, int_point, growth_rate)
+else :
+    load_multipliers = np.linspace(load_min, load_max, load_steps)
+
+# Initialization of vectors to store data of interest
+energies   = np.zeros((len(load_multipliers), 4))
+iterations = np.zeros((len(load_multipliers), 2))
 
 # Variational formulation
 # ----------------------------------------------------------------------------
@@ -248,7 +247,7 @@ V  = FunctionSpace(mesh, TH)
 w_p    = Function(V)
 u_p    = TrialFunction(V)
 v_q    = TestFunction(V)
-(u, p) = split(w_p)
+(u, p) = split(w_p)         # Displacement and pressure
 (v, q) = split(v_q)         # Test functions for (u,p)
 # define the function, test, and trial for damage problem
 alpha  = Function(CG1)
@@ -263,26 +262,22 @@ JScalar = Function(CG1, name="Volume Ratio")
 # Dirichlet boundary condition
 # --------------------------------------------------------------------
 u00 = Expression("0.0", degree=0)
-u0 = Expression(["0.0","0.0","0.0"], degree=0)
-u1 = Expression("t",  t=0.0, degree=0)
-u2 = Expression("-t", t=0.0, degree=0)
+u_top = Expression(["0.0", "t", "0.0"], t=0.0, degree=0)
+u_bot = Expression(["0.0", "-t", "0.0"], t=0.0, degree=0)
 # Displacement on top and bottom boundaries
 bc_u0 = DirichletBC(V.sub(0).sub(2), u00, pin_point, method='pointwise')
 # Displacement fixed in x and y on bottom
-bc_u1 = DirichletBC(V.sub(0).sub(0), u00, bot_boundary)
-bc_u2 = DirichletBC(V.sub(0).sub(1), u2, bot_boundary)
-bc_u3 = DirichletBC(V.sub(0).sub(0), u00, top_boundary)
-bc_u4 = DirichletBC(V.sub(0).sub(1), u1, top_boundary)
-bc_u = [bc_u0, bc_u1, bc_u2, bc_u3, bc_u4]
+bc_bot = DirichletBC(V.sub(0), u_bot, bot_boundary)
+bc_top = DirichletBC(V.sub(0), u_top, top_boundary)
+bc_u = [bc_bot, bc_top]
 
 # bc - alpha (zero damage)
 bc_alpha0 = DirichletBC(CG1, 0.0, top_boundary)
 bc_alpha1 = DirichletBC(CG1, 0.0, bot_boundary)
 bc_alpha = [bc_alpha0, bc_alpha1]
 
-# Define the energy functional of damage problem
-# --------------------------------------------------------------------
 # Kinematics
+# --------------------------------------------------------------------
 d = len(u)
 I = Identity(d)             # Identity tensor
 F = I + grad(u)             # Deformation gradient
@@ -331,9 +326,6 @@ def Heaviside(x):       # Heaviside step function: H(x) = 1, x>= 0; H(x) = 0, x<
 # Elastic energy, additional terms enforce material incompressibility and regularizes the Lagrange Multiplier
 elastic_energy  = (a(alpha)+k_ell)*(mu/2.0)*(Ic-3.0-2.*ln(J))*dx \
                 - b_sq(alpha)*p*(J-1)*dx - 1./(2.*kappa)*p**2*dx
-elastic_energy2 = (a(alpha)+k_ell)*(mu/2.0)*(lmbda1s+lmbda2s+lmbda3s-3.-2.*ln(lmbda1s*lmbda2s*lmbda3s))*dx \
-                - b_sq(alpha)*p*(J-1)*dx - 1./(2.*kappa)*p**2*dx
-
 external_work  = dot(body_force, u)*dx
 elastic_potential = elastic_energy - external_work
 
@@ -362,10 +354,13 @@ solver_u.parameters.update(solver_u_parameters)
 # info(solver_u.parameters, True)
 
 # Define the energy functional of damage problem
-# --------------------------------------------------------------------
-alpha_0 = interpolate(Expression("0.", degree=0), CG1)  # initial (known) alpha
+# -----------------------------------------------------------------------------
+# Initial (known) damage is an undamaged state
+alpha_0 = interpolate(Expression("0.", degree=0), CG1)
+# Define the specific energy dissipation per unit volume
 z = sympy.Symbol("z", positive=True)
 c_w = float(4 * sympy.integrate(sympy.sqrt(w(z)), (z, 0, 1)))
+# Define the phase-field fracture term of the damage functional
 dissipated_energy = Gc/float(c_w)*(w(alpha)/ell + ell*dot(grad(alpha), grad(alpha)))*dx
 # The elastic potential now consists of W_act + W_pas
 damage_functional = W_act + W_pas + dissipated_energy
@@ -376,24 +371,11 @@ E_alpha       = derivative(damage_functional, alpha, beta)
 E_alpha_alpha = derivative(E_alpha, alpha, dalpha)
 
 # Set the lower and upper bound of the damage variable (0-1)
-# alpha_lb = interpolate(Expression("x[0]>=0 & x[0]<=L/2 & near(x[1], H/2, 0.1 * hsize) ? 1.0 : 0.0", \
-#                        hsize = hsize, L=L, H=H, degree=0), CG1)
-alpha_lb = interpolate(Expression("0.", degree=0), CG1)
+alpha_lb = interpolate(Expression("0.", degree=0), CG1)  # lower bound, set to 0
 alpha_ub = interpolate(Expression("1.", degree=0), CG1)  # upper bound, set to 1
 
-# Loading vector modeled after an exponential function
-if exp_load == 1:
-    fcn_load = np.linspace(load_min, load_steps, load_steps)
-    load_multipliers = []
-    for steps in fcn_load:
-        exp1 = a_exp*exp(b_exp*steps) + c_exp*exp(d_exp*steps)
-        load_multipliers.append(exp1)
-else :
-    load_multipliers = np.linspace(load_min, load_max, load_steps)
-
-# initialization of vectors to store data of interest
-energies   = np.zeros((len(load_multipliers), 5))
-iterations = np.zeros((len(load_multipliers), 2))
+# Split into displacement and pressure
+(u, p)   = w_p.split()
 
 # Data file name
 file_tot = XDMFFile(MPI.comm_world, savedir + "/results.xdmf")
@@ -404,10 +386,9 @@ file_tot.parameters["flush_output"]          = True
 # write the parameters to file
 File(savedir+"/parameters.xml") << userpar
 
-timer0 = time.process_time()        # Timer start
-
 # Solving at each timestep
 # ----------------------------------------------------------------------------
+timer0 = time.process_time()        # Timer start
 for (i_t, t) in enumerate(load_multipliers):
     if MPI.rank(MPI.comm_world) == 0:
         print("\033[1;32m--- Starting of Time step {0:2d}: t = {1:4f} ---\033[1;m".format(i_t, t))
@@ -433,11 +414,8 @@ for (i_t, t) in enumerate(load_multipliers):
         # update iteration
         alpha_0.assign(alpha)
         iteration = iteration + 1
-    # updating the lower bound to account for the irreversibility
+    # Updating the lower bound to account for the irreversibility
     alpha_lb.vector()[:] = alpha.vector()
-
-    # Split into displacement and pressure
-    (u, p)   = w_p.split()
 
     # Project nominal stress to tensor function space
     local_project(P(u, alpha), T_DG0, PTensor)
@@ -458,8 +436,8 @@ for (i_t, t) in enumerate(load_multipliers):
     file_tot.write(JScalar,t)
 
     # Update the displacement with each iteration
-    u1.t = t
-    u2.t = t
+    u_top.t = t
+    u_bot.t = t
 
     # Some post-processing
     # ----------------------------------------
@@ -469,16 +447,13 @@ for (i_t, t) in enumerate(load_multipliers):
     # Calculate the energies
     elastic_energy_value = assemble(elastic_energy)
     surface_energy_value = assemble(dissipated_energy)
-    volume_ratio         = assemble(J/(T*H*W)*dx)
 
     energies[i_t] = np.array([t, elastic_energy_value, surface_energy_value, elastic_energy_value+\
-    	                      surface_energy_value, volume_ratio])
+    	                      surface_energy_value])
 
     if MPI.rank(MPI.comm_world) == 0:
         print("\nEnd of timestep {0:3d} with load multiplier {1:4f}".format(i_t, t))
         print("\nElastic and Surface Energies: [{0:6f},{1:6f}]".format(elastic_energy_value, surface_energy_value))
-        # print("\nElastic and Surface Energies: [{},{}]".format(elastic_energy_value, surface_energy_value))
-        print("\nVolume Ratio: [{}]".format(volume_ratio))
         print("-----------------------------------------")
         # Save some global quantities as a function of the time
         np.savetxt(savedir + '/Taylor-Hood-energies.txt', energies)
@@ -496,11 +471,4 @@ if MPI.rank(MPI.comm_world) == 0:
     plt.ylabel('Energies')
     plt.title('Taylor-Hood FEM')
     plt.savefig(savedir + '/Taylor-Hood-energies.pdf', transparent=True)
-    plt.close()
-
-    p4, = plt.plot(energies[slice(None), 0], energies[slice(None), 4])
-    plt.xlabel('Displacement')
-    plt.ylabel('Volume ratio')
-    plt.title('Taylor-Hood FEM')
-    plt.savefig(savedir + '/Taylor-Hood-volume-ratio.pdf', transparent=True)
     plt.close()

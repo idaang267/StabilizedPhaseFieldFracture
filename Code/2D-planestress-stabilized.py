@@ -170,10 +170,6 @@ k_ell = userpar["k_ell"]        # Residual stiffness
 ell_multi = userpar["ell_multi"]
 ell = Constant(ell_multi*hsize)
 
-# Stabilization parameters
-h = CellDiameter(mesh)      # Characteristic element length
-varpi_ = 1.0                # Non-dimension non-negative stability parameter
-
 if MPI.rank(MPI.comm_world) == 0:
   print("The kappa/mu: {0:4e}".format(kappa/mu))
   print("The mu/Gc: {0:4e}".format(mu/Gc))
@@ -210,6 +206,10 @@ ndim = mesh.geometry().dim()
 # Structure used for one printout of the statement
 if MPI.rank(MPI.comm_world) == 0:
     print ("Mesh Dimension: {0:2d}".format(ndim))
+
+# Stabilization parameters
+h = CellDiameter(mesh)      # Characteristic element length
+varpi_ = 1.0                # Non-dimension non-negative stability parameter
 
 # Define lines and points this is for visualization to make sure boundary
 # conditions are applied correctly
